@@ -358,10 +358,11 @@ class Conversation(Base):
 
     id         = Column(Integer, primary_key=True, index=True)
     team_id    = Column(Integer, ForeignKey("teams.id"), unique=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
     
     # ── relationships ──
     team     = relationship("Team")
-    messages = relationship("Message", back_populates="conversation")
+    messages = relationship("Message", back_populates="conversation", order_by="Message.created_at.asc()")
 
     def __repr__(self):
         return f"<Conversation team_id={self.team_id}>"
@@ -377,6 +378,7 @@ class Message(Base):
     id              = Column(Integer, primary_key=True, index=True)
     conversation_id = Column(Integer, ForeignKey("conversations.id"))
     sender_id       = Column(Integer, ForeignKey("users.id"))
+    sender_role     = Column(String)
     content         = Column(Text)
     created_at      = Column(DateTime, default=datetime.utcnow)
 
@@ -459,3 +461,25 @@ class Certificate(Base):
 
     def __repr__(self):
         return f"<Certificate {self.id} | user={self.user_id} type={self.certificate_type}>"
+
+
+# ──────────────────────────────────────────────
+# NOTIFICATION
+# ──────────────────────────────────────────────
+
+class Notification(Base):
+    __tablename__ = "notifications"
+
+    id         = Column(Integer, primary_key=True, index=True)
+    user_id    = Column(Integer, ForeignKey("users.id"))
+    title      = Column(String)
+    message    = Column(String)
+    type       = Column(String) # e.g. "MESSAGE", "TEAM", "CERTIFICATE"
+    is_read    = Column(Boolean, default=False)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+    # ── relationships ──
+    user = relationship("User")
+
+    def __repr__(self):
+        return f"<Notification {self.id} | user={self.user_id} type={self.type}>"

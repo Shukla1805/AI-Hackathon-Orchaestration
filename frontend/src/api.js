@@ -70,3 +70,38 @@ export function getUsername() {
 export function isAuthenticated() {
   return !!localStorage.getItem("token");
 }
+
+export async function putWithAuth(endpoint, body = {}) {
+  const token = localStorage.getItem("token");
+  const res = await fetch(`${API_BASE}${endpoint}`, {
+    method: "PUT",
+    headers: {
+      "Authorization": `Bearer ${token}`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify(body),
+  });
+  if (res.status === 401) {
+    localStorage.clear();
+    window.location.href = "/login";
+    return null;
+  }
+  if (!res.ok) throw new Error(`API error: ${res.status}`);
+  return res.json();
+}
+
+export async function getNotifications() {
+  return fetchWithAuth("/api/v1/notifications");
+}
+
+export async function getUnreadNotificationCount() {
+  return fetchWithAuth("/api/v1/notifications/unread-count");
+}
+
+export async function markNotificationAsRead(id) {
+  return putWithAuth(`/api/v1/notifications/${id}/read`);
+}
+
+export async function markAllNotificationsAsRead() {
+  return putWithAuth("/api/v1/notifications/mark-all-read");
+}

@@ -436,6 +436,20 @@ def reject_gate(
     return approval
 
 
+def _create_notification(db: Session, user_id: int, title: str, message: str, type: str):
+    """Utility to create a notification for a user."""
+    notif = models.Notification(
+        user_id=user_id,
+        title=title,
+        message=message,
+        type=type,
+    )
+    db.add(notif)
+    # Don't commit here, let the caller commit if it's part of a transaction,
+    # or we can commit if we want. But the caller usually commits right after.
+    # Actually, we should commit/flush depending on usage.
+    # To be safe, just add it. The caller's db.commit() will save it.
+
 def _apply_approve_cascade(approval, db: Session) -> None:
     """
     Dispatches domain side-effects when an approval transitions to APPROVED.
@@ -451,6 +465,11 @@ def _apply_approve_cascade(approval, db: Session) -> None:
             if team:
                 team_repo.set_approved(team, approved=True)
                 logger.info(f"  ↳ Team #{approval.team_id} marked as approved.")
+                for member in team.members:
+                    if member.email:
+                        u = db.query(models.User).filter(models.User.username == member.email.split('@')[0]).first()
+                        if u:
+                            _create_notification(db, u.id, "Team Assigned", f"You have been assigned to {team.name}", "TEAM")
 
     elif atype == ApprovalType.RESULT_PUBLICATION_REVIEW:
         if approval.team_id:
@@ -458,6 +477,11 @@ def _apply_approve_cascade(approval, db: Session) -> None:
             if team:
                 team_repo.set_qualified(team, qualified=True)
                 logger.info(f"  ↳ Team #{approval.team_id} marked as qualified (results published).")
+                for member in team.members:
+                    if member.email:
+                        u = db.query(models.User).filter(models.User.username == member.email.split('@')[0]).first()
+                        if u:
+                            _create_notification(db, u.id, "Leaderboard Published", "Results have been published", "SYSTEM")
 
     elif atype == ApprovalType.ANOMALY_REVIEW:
         # Committee reviewed the anomaly and decided to accept scores as-is
@@ -1123,6 +1147,11 @@ def _ensure_mentor_assignments(db: Session):
                 rationale=rationale
             )
             db.add(assignment)
+            for member in team.members:
+                if member.email:
+                    u = db.query(models.User).filter(models.User.username == member.email.split('@')[0]).first()
+                    if u:
+                        _create_notification(db, u.id, "Mentor Assigned", "You have been assigned a mentor", "TEAM")
         db.commit()
 
 
@@ -1416,6 +1445,7 @@ def publish_certificates(current_user: User = Depends(get_current_user), db: Ses
     certs = db.query(models.Certificate).filter(models.Certificate.is_published == False).all()
     for cert in certs:
         cert.is_published = True
+        _create_notification(db, cert.user_id, "Certificate Available", "Your certificate is now available for download", "CERTIFICATE")
     db.commit()
     return {"status": "success", "published_count": len(certs)}
 
@@ -1479,6 +1509,7 @@ def _ensure_conversations_exist(db: Session):
                 msg1 = models.Message(
                     conversation_id=conv.id,
                     sender_id=user1.id,
+                    sender_role=user1.role.value if user1 else "PARTICIPANT",
                     content="Hey team, let's get started on the project!",
                     created_at=datetime.utcnow() - timedelta(days=2)
                 )
@@ -1490,6 +1521,7 @@ def _ensure_conversations_exist(db: Session):
                     msg2 = models.Message(
                         conversation_id=conv.id,
                         sender_id=user2.id,
+                        sender_role=user2.role.value if user2 else "PARTICIPANT",
                         content="Sounds good. I'll set up the repository.",
                         created_at=datetime.utcnow() - timedelta(days=2, hours=-1)
                     )
@@ -1500,6 +1532,7 @@ def _ensure_conversations_exist(db: Session):
                 msg3 = models.Message(
                     conversation_id=conv.id,
                     sender_id=team.mentor_assignment.mentor.user_id,
+                    sender_role="MENTOR",
                     content="Hi everyone, I'm your mentor. Feel free to ask any questions!",
                     created_at=datetime.utcnow() - timedelta(days=1)
                 )
@@ -1511,8 +1544,8 @@ def _format_message(msg: models.Message):
     return {
         "id": msg.id,
         "sender_id": msg.sender_id,
-        "sender_name": msg.sender.username,
-        "sender_role": msg.sender.role.value,
+        "sender_name": msg.sender.username if msg.sender else "Unknown",
+        "sender_role": msg.sender_role or (msg.sender.role.value if msg.sender else "UNKNOWN"),
         "content": msg.content,
         "created_at": msg.created_at
     }
@@ -1543,7 +1576,7 @@ def get_participant_chat(current_user: User = Depends(get_current_user), db: Ses
     return {
         "id": conv.id,
         "team_id": conv.team_id,
-        "messages": [_format_message(m) for m in conv.messages]
+        "messages": [_format_message(m) for m in sorted(conv.messages, key=lambda x: x.created_at)]
     }
 
 
@@ -1568,14 +1601,27 @@ def send_participant_chat(req: schemas.MessageCreate, current_user: User = Depen
     msg = models.Message(
         conversation_id=conv.id,
         sender_id=current_user.id,
+        sender_role="PARTICIPANT",
         content=req.content
     )
     db.add(msg)
     db.commit()
     db.refresh(msg)
     
+    if conv.team:
+        sender_name = profile.name or current_user.username
+        for member in conv.team.members:
+            if member.email and member.email.split('@')[0] != current_user.username:
+                u = db.query(models.User).filter(models.User.username == member.email.split('@')[0]).first()
+                if u:
+                    _create_notification(db, u.id, "New Team Message", f"{sender_name} sent a new team message", "MESSAGE")
+        if conv.team.mentor_assignment:
+            m_user_id = conv.team.mentor_assignment.mentor.user_id
+            if m_user_id != current_user.id:
+                _create_notification(db, m_user_id, "New Team Message", f"{sender_name} sent a new team message", "MESSAGE")
+        db.commit()
+    
     return {"status": "success", "message": _format_message(msg)}
-
 
 @app.get("/api/v1/mentor/chat", response_model=list[schemas.ConversationRead], tags=["Communication"])
 def get_mentor_chat(current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
@@ -1594,7 +1640,7 @@ def get_mentor_chat(current_user: User = Depends(get_current_user), db: Session 
             conversations.append({
                 "id": conv.id,
                 "team_id": conv.team_id,
-                "messages": [_format_message(m) for m in conv.messages]
+                "messages": [_format_message(m) for m in sorted(conv.messages, key=lambda x: x.created_at)]
             })
             
     return conversations
@@ -1623,11 +1669,22 @@ def send_mentor_chat(req: schemas.MessageCreate, current_user: User = Depends(ge
     msg = models.Message(
         conversation_id=conv.id,
         sender_id=current_user.id,
+        sender_role="MENTOR",
         content=req.content
     )
     db.add(msg)
     db.commit()
     db.refresh(msg)
+    
+    if conv.team:
+        for member in conv.team.members:
+            if member.email:
+                u = db.query(models.User).filter(models.User.username == member.email.split('@')[0]).first()
+                if u:
+                    # e.g. "Dr. Sharma replied to your team" or "mentor replied"
+                    _create_notification(db, u.id, "New Mentor Message", f"{current_user.username} replied to your team", "MESSAGE")
+        db.commit()
+        
     return {"status": "success", "message": _format_message(msg)}
 
 
@@ -1789,4 +1846,38 @@ def submit_team_score(team_id: int, score_data: schemas.ScoreSubmit, current_use
     score.weighted_total = weighted_total
     
     db.commit()
-    return {"status": "success", "message": "Score submitted successfully."}
+    
+    for member in team.members:
+        if member.email:
+            u = db.query(models.User).filter(models.User.username == member.email.split('@')[0]).first()
+            if u:
+                _create_notification(db, u.id, "Project Evaluation Completed", "Your project evaluation has been completed", "SYSTEM")
+    db.commit()
+    
+    return {"status": "success", "message": "Score submitted successfully."}
+
+# ── Notifications Endpoints ────────────────────────────────────
+
+@app.get("/api/v1/notifications", response_model=list[schemas.NotificationRead], tags=["Notifications"])
+def get_notifications(current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    return db.query(models.Notification).filter(models.Notification.user_id == current_user.id).order_by(models.Notification.created_at.desc()).all()
+
+@app.get("/api/v1/notifications/unread-count", response_model=schemas.NotificationCount, tags=["Notifications"])
+def get_unread_count(current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    count = db.query(models.Notification).filter(models.Notification.user_id == current_user.id, models.Notification.is_read == False).count()
+    return {"count": count}
+
+@app.put("/api/v1/notifications/{notification_id}/read", tags=["Notifications"])
+def mark_notification_read(notification_id: int, current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    notif = db.query(models.Notification).filter(models.Notification.id == notification_id, models.Notification.user_id == current_user.id).first()
+    if not notif:
+        raise HTTPException(status_code=404, detail="Notification not found")
+    notif.is_read = True
+    db.commit()
+    return {"status": "success"}
+
+@app.put("/api/v1/notifications/mark-all-read", tags=["Notifications"])
+def mark_all_notifications_read(current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    db.query(models.Notification).filter(models.Notification.user_id == current_user.id, models.Notification.is_read == False).update({"is_read": True})
+    db.commit()
+    return {"status": "success"}

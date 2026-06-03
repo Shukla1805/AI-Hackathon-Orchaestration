@@ -1,8 +1,13 @@
-import { useState } from "react";
-import { logout, getUsername } from "../api";
+import { useState, useEffect, useRef } from "react";
+import { logout, getUsername, getNotifications, getUnreadNotificationCount, markNotificationAsRead, markAllNotificationsAsRead } from "../api";
 
 export default function DashboardLayout({ navItems, pageContent, active, setActive, role, children }) {
   const [sidebarOpen, setSidebarOpen] = useState(false);
+  const [notificationsOpen, setNotificationsOpen] = useState(false);
+  const [notifications, setNotifications] = useState([]);
+  const [unreadCount, setUnreadCount] = useState(0);
+  const notifRef = useRef(null);
+
   const username = getUsername() || "User";
   const initials = username.slice(0, 2).toUpperCase();
 
@@ -13,6 +18,67 @@ export default function DashboardLayout({ navItems, pageContent, active, setActi
     PARTICIPANT: "Participant",
     MENTOR: "Mentor",
     JUDGE: "Judge",
+  };
+
+  useEffect(() => {
+    const fetchCount = async () => {
+      try {
+        const res = await getUnreadNotificationCount();
+        if (res && res.count !== undefined) {
+          setUnreadCount(res.count);
+        }
+      } catch (err) {
+        console.error("Failed to fetch notification count", err);
+      }
+    };
+    fetchCount();
+    const interval = setInterval(fetchCount, 15000);
+    return () => clearInterval(interval);
+  }, []);
+
+  useEffect(() => {
+    const handleClickOutside = (event) => {
+      if (notifRef.current && !notifRef.current.contains(event.target)) {
+        setNotificationsOpen(false);
+      }
+    };
+    document.addEventListener("mousedown", handleClickOutside);
+    return () => document.removeEventListener("mousedown", handleClickOutside);
+  }, []);
+
+  const handleOpenNotifications = async () => {
+    setNotificationsOpen(!notificationsOpen);
+    if (!notificationsOpen) {
+      try {
+        const data = await getNotifications();
+        if (data) {
+          setNotifications(data);
+        }
+      } catch (err) {
+        console.error("Failed to fetch notifications", err);
+      }
+    }
+  };
+
+  const handleMarkAsRead = async (id, e) => {
+    e.stopPropagation();
+    try {
+      await markNotificationAsRead(id);
+      setNotifications(prev => prev.map(n => n.id === id ? { ...n, is_read: true } : n));
+      setUnreadCount(prev => Math.max(0, prev - 1));
+    } catch (err) {
+      console.error(err);
+    }
+  };
+
+  const handleMarkAllAsRead = async () => {
+    try {
+      await markAllNotificationsAsRead();
+      setNotifications(prev => prev.map(n => ({ ...n, is_read: true })));
+      setUnreadCount(0);
+    } catch (err) {
+      console.error(err);
+    }
   };
 
   return (
@@ -190,22 +256,64 @@ export default function DashboardLayout({ navItems, pageContent, active, setActi
                 ⌘K
               </span>
             </button>
-            <button className="relative p-2 rounded-lg text-slate-400 hover:text-white hover:bg-slate-800 transition-all duration-200">
-              <svg
-                width="17"
-                height="17"
-                viewBox="0 0 24 24"
-                fill="none"
-                stroke="currentColor"
-                strokeWidth="2"
-                strokeLinecap="round"
-                strokeLinejoin="round"
+            <div className="relative" ref={notifRef}>
+              <button 
+                onClick={handleOpenNotifications}
+                className="relative p-2 rounded-lg text-slate-400 hover:text-white hover:bg-slate-800 transition-all duration-200"
               >
-                <path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9" />
-                <path d="M13.73 21a2 2 0 0 1-3.46 0" />
-              </svg>
-              <span className="absolute top-1.5 right-1.5 w-1.5 h-1.5 bg-rose-500 rounded-full ring-1 ring-slate-950" />
-            </button>
+                <svg
+                  width="17"
+                  height="17"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  strokeWidth="2"
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                >
+                  <path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9" />
+                  <path d="M13.73 21a2 2 0 0 1-3.46 0" />
+                </svg>
+                {unreadCount > 0 && (
+                  <span className="absolute top-1.5 right-1.5 w-4 h-4 bg-rose-500 rounded-full ring-2 ring-slate-950 flex items-center justify-center text-[8px] font-bold text-white shadow-sm">
+                    {unreadCount > 9 ? '9+' : unreadCount}
+                  </span>
+                )}
+              </button>
+              
+              {notificationsOpen && (
+                <div className="absolute right-0 mt-2 w-80 bg-slate-900 border border-slate-700/50 rounded-xl shadow-xl overflow-hidden z-50">
+                  <div className="flex items-center justify-between px-4 py-3 border-b border-slate-800 bg-slate-800/30">
+                    <h3 className="text-sm font-semibold text-white">Notifications</h3>
+                    {unreadCount > 0 && (
+                      <button onClick={handleMarkAllAsRead} className="text-xs text-indigo-400 hover:text-indigo-300">
+                        Mark all read
+                      </button>
+                    )}
+                  </div>
+                  <div className="max-h-96 overflow-y-auto">
+                    {notifications.length === 0 ? (
+                      <div className="p-4 text-center text-slate-500 text-sm">No notifications</div>
+                    ) : (
+                      notifications.map(n => (
+                        <div key={n.id} className={`p-4 border-b border-slate-800/50 ${n.is_read ? 'opacity-70' : 'bg-slate-800/20'}`}>
+                          <div className="flex justify-between items-start mb-1">
+                            <span className={`text-xs font-semibold ${n.is_read ? 'text-slate-400' : 'text-indigo-400'}`}>{n.title}</span>
+                            <span className="text-[10px] text-slate-500">{new Date(n.created_at).toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'})}</span>
+                          </div>
+                          <p className="text-sm text-slate-300 mt-1">{n.message}</p>
+                          {!n.is_read && (
+                            <button onClick={(e) => handleMarkAsRead(n.id, e)} className="mt-2 text-xs font-medium text-slate-500 hover:text-white transition-colors">
+                              Mark as read
+                            </button>
+                          )}
+                        </div>
+                      ))
+                    )}
+                  </div>
+                </div>
+              )}
+            </div>
             <button className="p-2 rounded-lg text-slate-400 hover:text-white hover:bg-slate-800 transition-all duration-200">
               <svg
                 width="17"
