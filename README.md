@@ -143,3 +143,19 @@ Bringing several modules into one workflow, securing role-based access, and keep
 * Multi-event support for hackathons, case competitions, and coding contests.
 * AI-based plagiarism and project-similarity detection.
 * Cloud deployment and a move to PostgreSQL with PgBouncer for heavy concurrent traffic.
+
+## Team Project
+
+This project was developed during the Texas Instruments WiSe@TI Hackathon.
+
+### Team Members
+-Prachi Joshi
+-Sahasra Kunku
+-Samridhi Jain
+-Deshna Shukla
+
+### My Contribution
+-Frontend Development
+Participants Dashboard UI
+React Components and Sytling
+UI Design and Features Implementation
